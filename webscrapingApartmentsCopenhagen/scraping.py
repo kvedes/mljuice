@@ -4,17 +4,20 @@ import pandas as pd
 import codecs
 import numpy as np
 import time
-url = ('https://www.findbolig.nu/ledigeboliger/liste.aspx?&showrented=1&showyouth'+
-'=0&showlimitedperiod=1&showunlimitedperiod=1&showOpenDay=0&sortkey=AvailableDate&sortdir=asc&page='+str(1)+'&pagesize=100')
+import tqdm
 
 #######
 # Function
-# input:  url
+# input:  page number, default =1
 # output: the body of the html page
 # Desc: It simply returns all tags in between <body></body>
 #######
 
-def htmlbody(url):
+
+def htmlbody(i=0):
+    url = ('https://www.findbolig.nu/ledigeboliger/liste.aspx?&showrented=1&showyouth'+
+    '=0&showlimitedperiod=1&showunlimitedperiod=1&showOpenDay=0&sortkey=AvailableDate&sortdir=asc&page='+str(i+1)+
+    '&pagesize=100')
     page = urllib.request.urlopen(url)
     soup = BeautifulSoup(page.read(),"html5lib")
     body = soup.find_all("tbody")
@@ -26,7 +29,7 @@ def htmlbody(url):
 # and uses ceil to give number of pages
 #######
 
-for element in htmlbody(url):
+for element in htmlbody():
     xl = element.find_all("span")
     for idx,item in enumerate(xl):
         if('id' in item.attrs):
@@ -36,28 +39,45 @@ for element in htmlbody(url):
 numberofpages = int(np.ceil(pd.to_numeric(s)/100))
 
 #######
-# Initializing lists for the wanted information
-#######
-
-link_list = []
-adress_list =  []
-size_list   =  []
-room_list   =  []
-price_list   =  []
-avail_list   =  []
-Owner_list   = []
-
-
-#######
 # Loops over every page with listed apartments, taking an element into
 # a list when an "if" statement is satisfied
 #######
-for i in range(numberofpages):
-    url ='https://www.findbolig.nu/ledigeboliger/liste.aspx?&showrented=1&showyouth=1&showlimitedperiod=1&showunlimitedperiod=1&showOpenDay=0&page='+str(i+1)+'&pagesize=100'
-    for element in htmlbody(url):
+from threading import Thread,Lock
+
+bodies = []
+lock = Lock()
+def threadSafelist(i):
+    threadRes=htmlbody(i)
+    lock.acquire() # will block if lock is already held
+    bodies.append(threadRes)
+    lock.release()
+
+threads = []
+for i in tqdm.tqdm(range(numberofpages)):#searchTerms:
+    threads.append (Thread (target=threadSafelist, args=(i,)))
+    threads[-1].start()
+
+for t in threads:
+    t.join()
+
+#######
+# Initializing lists for the wanted information
+#######
+
+link_list   =  []
+adress_list =  []
+size_list   =  []
+room_list   =  []
+price_list   = []
+avail_list   = []
+Owner_list   = []
+
+
+for body in bodies:
+
+    for element in body:
         check=0
         xl = element.find_all("img")
-
 
         #######
         # Example of if statement:
@@ -67,7 +87,6 @@ for i in range(numberofpages):
         # attribute, so it can be a little bit tricky and some fiddling is
         # necessary
         #######
-
 
         for idx,item in enumerate(xl):
             if ('title' in item.attrs):
@@ -109,4 +128,4 @@ df = pd.DataFrame({'Price':price_list,'Size': size_list, 'Rooms': room_list,
                    'Address':adress_list, 'Availability':avail_list, 'Owner': Owner_list,
                    'links': list(pd.unique(link_list))})
 
-df.to_csv("preWrangling.csv", index=False)
+df.to_csv("data/preWrangling.csv", index=False)
