@@ -30,7 +30,7 @@ X = X.assign(shift = X['Close'].shift())
 X = X.assign(double_shift = X['shift'].shift())
 
 # Remove the two first rows with NaN values
-X = X.loc[2:,['Date', 'shift','double_shift']]
+X = X.loc[2:,['Date', 'shift', 'double_shift']]
 
 #==============================================================================
 # Adding time dependent variables
@@ -74,9 +74,6 @@ X = X.assign(rolling_std_dev=time_dep_var(X.loc[:,['shift']], w_size, np.std))
 # Number of hyperparameters to test
 n_loops = 10
 
-# Matrix to store loss and hyperparameters. One column for loss one for the hyperparameter in Lasso.
-score_matrix = np.zeros((n_loops, 2))
-
 # Define or load a loss function. Here Mean Squared Error is used.
 loss_mse = lambda x, y: np.mean((x-y)**2)
 
@@ -112,9 +109,6 @@ step_size = np.timedelta64(30,'D')
 # Create generator
 time_points = equi_dist_time_points(end_train, end_validation, step_size)
 
-# Create boolean vector of all observations that are predicted
-all_predictions = np.logical_and((X['Date'] > end_train).values, (X['Date'] <= end_validation).values)
-
 #==============================================================================
 # Initialize parameter sampler and model
 #==============================================================================
@@ -131,16 +125,22 @@ mod = Lasso()
 #==============================================================================
 # Define Moving Window
 #==============================================================================
-def static_window(X, y, features_subset, model, time_points, parameter_sampler):
+def static_window(X, y, features_subset, model, time_points, parameter_sampler, loss_function):
     '''
     Function used for static window estimation.
-    X: Numpy ndarray of features
-    y: Numpy array of labels Nx1
+    X: Pandas dataframe of features
+    y: Pandas dataframe of labels Nx1
     features_subset: A list of names of features used in the model
     model: A model object that implements the scikit learn BaseEstimator interface and the methods fit and predict
     time_points: A generator that returns two consecutive time points
     parameter_sampler: A scikit learn parameter_sampler
     '''
+    # Matrix to store loss and hyperparameters. One column for loss one for the hyperparameter in Lasso.
+    score_matrix = np.zeros((n_loops, 2))
+
+    # Initialize time point between train and validation
+    split_point = None
+    
     # Loop over parameters
     for idx, p in enumerate(parameter_sampler):
 
@@ -148,11 +148,20 @@ def static_window(X, y, features_subset, model, time_points, parameter_sampler):
         pred = np.empty(X.shape[0])
 
         # Loop over time steps
-        for t_train, t_vali in time_points:
-
+        for idx_time, t_vec in enumerate(time_points):
+            # The generator returns a tuple. Split it into train and vali time points.
+            t_train = t_vec[0]
+            t_vali = t_vec[1]
+            
+            if idx_time == 0:
+                # If this is the initial training round, save the training time point.
+                split_point = t_train
+            
             # Create boolean vector, with true for all obs in current time step
-            cur_time_step = (X['Date'] <= t_train).values
-            next_time_step = np.logical_and((X['Date'] > t_train).values, (X['Date'] <= t_vali).values)
+            cur_time_step = X['Date'].values <= t_train
+
+            # Create boolean vector, with true for all obs in next time step
+            next_time_step = np.logical_and(X['Date'].values > t_train, X['Date'].values <= t_vali)
 
             # Prepare data for current time step
             X_cur = X.loc[cur_time_step, features_subset] #['shift','double_shift']]
@@ -170,11 +179,12 @@ def static_window(X, y, features_subset, model, time_points, parameter_sampler):
 
             # Predict
             X_pred = X.loc[next_time_step, features_subset].values 
-
             pred[next_time_step] = model.predict(X_pred)
 
         # Calculate loss and store in score_matrix together with the sampled hyperparameter
-        score_matrix[idx, 0] = loss_mse(pred[all_predictions], y[all_predictions])
+        # Find index of all observations from the validation data
+        validation_idx = X['Date'].values > split_point
+        score_matrix[idx, 0] = loss_function(pred[validation_idx], y[validation_idx])
 
         # Get name of hyperparameter
         param_name = list(parameter_sampler.param_distributions.keys())[0]
@@ -189,7 +199,7 @@ def static_window(X, y, features_subset, model, time_points, parameter_sampler):
 #==============================================================================
 
 # Identify the parameter set with the lowest corresponding loss
-score_matrix = static_window(X, y, ['shift','double_shift'], mod, time_points, par_samp)
+score_matrix = static_window(X, y, ['shift','double_shift'], mod, time_points, par_samp, loss_mse)
 row_of_best_hyp_param = np.argmin(score_matrix[:,0])
 print(score_matrix[row_of_best_hyp_param,:])
     
@@ -204,16 +214,13 @@ end_test = np.datetime64(X['Date'].max().strftime("%Y-%m-%d"))
 time_points_test = equi_dist_time_points(end_validation, end_test, step_size)
 
 # Create parameter sampler with only one value
-best_reg_param = {'alpha': [score_matrix[row_of_best_hyp_param,1]]}
+best_reg_param = {'alpha': [score_matrix[row_of_best_hyp_param, 1]]}
 
 # Define parameter sampler
-par_samp_test = ParameterSampler(best_reg_param, 1) # 10 indicates number of samples to draw
+par_samp_test = ParameterSampler(best_reg_param, 1) # 1 indicates number of samples to draw
 
 # Evaluate best model on test data
-score_matrix_test = static_window(X, y, ['shift','double_shift'], mod, time_points_test, par_samp_test)
+score_matrix_test = static_window(X, y, ['shift','double_shift'], mod, time_points_test, par_samp_test, loss_mse)
 
 # Print out score
 print(score_matrix_test[0,0])
-
-
-
